@@ -72,7 +72,7 @@ for (var key in specific)
  **/
 function computeMatchData(pm)
 {
-    //WARNING: Don't store fields that mutate based on self_hero in Cassandra.  It isn't set post-parse and the cache update will write incorrect data.
+    //WARNING: Don't store fields that mutate based on self_hero in player_caches table.  hero_id isn't set post-parse and the cache update will write incorrect data.
     var self_hero = constants.heroes[pm.hero_id];
     // Compute patch based on start_time
     if (pm.start_time)
@@ -352,108 +352,35 @@ function computeMatchData(pm)
     }
 }
 /**
- * Count the words that occur in a set of messages
- * - messages: the messages to create the counts over
- * - player_filter: if non-null, only count that player's messages
- **/
-function count_words(player_match, player_filter)
-{
-    var messages = player_match.chat;
-    // extract the message strings from the message objects
-    // extract individual words from the message strings
-    var chat_words = [];
-    messages.forEach(function(message)
-    {
-        // if there is no player_filter, or if the passed player's player_slot matches this message's parseSlot converted to player_slot, log it
-        var messageParseSlot = message.slot < 5 ? message.slot : message.slot + (128 - 5);
-        if (!player_filter || (messageParseSlot === player_filter.player_slot))
-        {
-            chat_words.push(message.key);
-        }
-    });
-    chat_words = chat_words.join(' ');
-    var tokens = utility.tokenize(chat_words);
-    // count how frequently each word occurs
-    var counts = {};
-    for (var i = 0; i < tokens.length; i++)
-    {
-        //ignore the empty string
-        if (tokens[i])
-        {
-            if (!counts[tokens[i]])
-            {
-                counts[tokens[i]] = 0;
-            }
-            counts[tokens[i]] += 1;
-        }
-    }
-    // return the final counts
-    return counts;
-}
-/**
  * Renders display-only data for a match (doesn't need to be aggregated)
  **/
 function renderMatch(m)
 {
     //do render-only processing (not needed for aggregation, only for match display)
-    m.players.forEach(function(player_match, i)
+    m.players.forEach(function(pm, i)
     {
-        //converts hashes to arrays and sorts them
-        var targets = ["ability_uses", "item_uses", "damage_inflictor"];
-        targets.forEach(function(target)
-        {
-            if (player_match[target])
-            {
-                var t = [];
-                for (var key in player_match[target])
-                {
-                    var a = constants.abilities[key];
-                    var i = constants.items[key];
-                    var def = {
-                        img: "/public/images/default_attack.png"
-                    };
-                    def = a || i || def;
-                    var result = {
-                        img: def.img,
-                        name: key === "undefined" ? "Auto Attack/Other" : key,
-                        val: player_match[target][key],
-                        className: a ? "ability" : i ? "item" : "img-sm"
-                    };
-                    if (player_match.hero_hits)
-                    {
-                        result.hero_hits = player_match.hero_hits[key];
-                    }
-                    t.push(result);
-                }
-                t.sort(function(a, b)
-                {
-                    return b.val - a.val;
-                });
-                player_match[target + "_arr"] = t;
-            }
-        });
         //filter interval data to only be >= 0
-        if (player_match.times)
+        if (pm.times)
         {
             var intervals = ["lh_t", "gold_t", "xp_t", "times"];
             intervals.forEach(function(key)
             {
-                player_match[key] = player_match[key].filter(function(el, i)
+                pm[key] = pm[key].filter(function(el, i)
                 {
-                    return player_match.times[i] >= 0;
+                    return pm.times[i] >= 0;
                 });
             });
         }
         //compute damage to towers/rax/roshan
-        if (player_match.damage)
+        if (pm.damage)
         {
             //npc_dota_goodguys_tower2_top
             //npc_dota_goodguys_melee_rax_top
             //npc_dota_roshan
             //npc_dota_neutral_giant_wolf
             //npc_dota_creep
-            player_match.objective_damage = {};
-            for (var key in player_match.damage)
+            pm.objective_damage = {};
+            for (var key in pm.damage)
             {
                 var identifier = null;
                 if (key.indexOf("tower") !== -1)
@@ -472,9 +399,43 @@ function renderMatch(m)
                 {
                     identifier = "fort";
                 }
-                player_match.objective_damage[identifier] = player_match.objective_damage[identifier] ? player_match.objective_damage[identifier] + player_match.damage[key] : player_match.damage[key];
+                pm.objective_damage[identifier] = pm.objective_damage[identifier] ? pm.objective_damage[identifier] + pm.damage[key] : pm.damage[key];
             }
         }
+        //converts hashes to arrays and sorts them
+        var targets = ["ability_uses", "item_uses", "damage_inflictor", "damage_inflictor_received"];
+        targets.forEach(function(target)
+        {
+            if (pm[target])
+            {
+                var t = [];
+                for (var key in pm[target])
+                {
+                    var a = constants.abilities[key];
+                    var i = constants.items[key];
+                    var def = {
+                        img: "/public/images/default_attack.png"
+                    };
+                    def = a || i || def;
+                    var result = {
+                        img: def.img,
+                        name: key === "undefined" ? "Auto Attack/Other" : key,
+                        val: pm[target][key],
+                        className: a ? "ability" : i ? "item" : "img-sm"
+                    };
+                    if (pm.hero_hits)
+                    {
+                        result.hero_hits = pm.hero_hits[key];
+                    }
+                    t.push(result);
+                }
+                t.sort(function(a, b)
+                {
+                    return b.val - a.val;
+                });
+                pm[target + "_arr"] = t;
+            }
+        });
     });
     console.time("generating player analysis");
     m.players.forEach(function(player_match, i)
@@ -716,6 +677,45 @@ function generateTreemapData(match)
         });
     }
     return data;
+}
+/**
+ * Count the words that occur in a set of messages
+ * - messages: the messages to create the counts over
+ * - player_filter: if non-null, only count that player's messages
+ **/
+function count_words(player_match, player_filter)
+{
+    var messages = player_match.chat;
+    // extract the message strings from the message objects
+    // extract individual words from the message strings
+    var chat_words = [];
+    messages.forEach(function(message)
+    {
+        // if there is no player_filter, or if the passed player's player_slot matches this message's parseSlot converted to player_slot, log it
+        var messageParseSlot = message.slot < 5 ? message.slot : message.slot + (128 - 5);
+        if (!player_filter || (messageParseSlot === player_filter.player_slot))
+        {
+            chat_words.push(message.key);
+        }
+    });
+    chat_words = chat_words.join(' ');
+    var tokens = utility.tokenize(chat_words);
+    // count how frequently each word occurs
+    var counts = {};
+    for (var i = 0; i < tokens.length; i++)
+    {
+        //ignore the empty string
+        if (tokens[i])
+        {
+            if (!counts[tokens[i]])
+            {
+                counts[tokens[i]] = 0;
+            }
+            counts[tokens[i]] += 1;
+        }
+    }
+    // return the final counts
+    return counts;
 }
 module.exports = {
     renderMatch,

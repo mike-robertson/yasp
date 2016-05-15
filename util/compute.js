@@ -394,7 +394,7 @@ function renderMatch(m)
                     def = a || i || def;
                     var result = {
                         img: def.img,
-                        name: key === "undefined" ? "Auto Attack/Other" : key,
+                        name: key === "undefined" || key === "null" ? "Auto Attack/Other" : key,
                         val: pm[target][key],
                         className: a ? "ability" : i ? "item" : "img-sm"
                     };

@@ -19,7 +19,6 @@ function tokenize(input)
 {
     return input.replace(/[^a-zA-Z- ]+/g, '').replace('/ {2,}/', ' ').toLowerCase().split(' ');
 }
-
 /**
  * Creates a job object for enqueueing that contains details such as the Steam API endpoint to hit
  **/
@@ -165,7 +164,6 @@ function generateJob(type, payload)
     };
     return opts[type]();
 }
-
 /**
  * A wrapper around HTTP requests that handles:
  * proxying
@@ -643,7 +641,14 @@ function deserialize(row)
     var obj = {};
     row.keys().forEach(function(key)
     {
-        obj[key] = JSON.parse(row[key]);
+        try
+        {
+            obj[key] = JSON.parse(row[key]);
+        }
+        catch (e)
+        {
+            console.log('exception occurred during JSON parse: %s', e);
+        }
     });
     return obj;
 }

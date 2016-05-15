@@ -637,7 +637,6 @@ function serialize(row)
 function deserialize(row)
 {
     var obj = {};
-    console.log(row)
     row.keys().forEach(function(key)
     {
         obj[key] = JSON.parse(row[key]);

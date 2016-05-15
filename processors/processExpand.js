@@ -503,7 +503,7 @@ function processExpand(entries, meta)
         {
             return input.slice(5);
         }
-        return input.slice(0);
+        return input;
     }
     /**
      * Prepends illusion_ to string if illusion

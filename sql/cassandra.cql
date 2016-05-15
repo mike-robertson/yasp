@@ -87,13 +87,7 @@ CREATE TABLE yasp.player_matches (
   kill_streaks text,
   multi_kills text,
   life_state text,
-  radiant_win boolean,
-  start_time int,
-  duration int,
-  cluster int,
-  lobby_type int,
-  game_mode int,
-  parse_status int,
+  damage_inflictor_received text,
 );
 
 CREATE TABLE yasp.player_caches (
@@ -163,5 +157,5 @@ CREATE TABLE yasp.player_caches (
   stuns text,
   lane_efficiency_pct text,
   parse_status text,
-  skill text
+  skill text,
 );

@@ -13,7 +13,6 @@ config.REDIS_URL = "redis://localhost:6379/1";
 config.SESSION_SECRET = "testsecretvalue";
 config.NODE_ENV = "test";
 config.ENABLE_MATCH_CACHE = 1;
-//config.ENABLE_PLAYER_CACHE = 1;
 config.FRONTEND_PORT = 5001;
 config.PARSER_PORT = 5201;
 var async = require('async');
@@ -30,6 +29,7 @@ var wait = 90000;
 // these are loaded later, as the database needs to be created when these are required
 var db;
 var app;
+var details_api = require('./details_api.json');
 //nock.disableNetConnect();
 //nock.enableNetConnect();
 //fake api response
@@ -38,7 +38,7 @@ nock('http://api.steampowered.com')
     .get('/IDOTA2Match_570/GetMatchDetails/V001/').query(true).reply(500,
     {})
     //fake match details
-    .get('/IDOTA2Match_570/GetMatchDetails/V001/').query(true).times(10).reply(200, require('./details_api.json'))
+    .get('/IDOTA2Match_570/GetMatchDetails/V001/').query(true).times(10).reply(200, details_api)
     //fake player summaries
     .get('/ISteamUser/GetPlayerSummaries/v0002/').query(true).reply(200, require('./summaries_api.json'))
     //non-retryable error
@@ -122,7 +122,7 @@ before(function(done)
             app = require('../svc/web');
             require('../svc/parser');
             console.log("loading matches");
-            async.mapSeries([require('./details_api.json').result], function(m, cb)
+            async.mapSeries([details_api.result], function(m, cb)
             {
                 queries.insertMatch(db, redis, m,
                 {
@@ -143,7 +143,7 @@ describe("parser", function()
 {
     this.timeout(wait);
     var tests = {
-        '1781962623_source2.dem': 1781962623
+        '1781962623_source2.dem': details_api.result
     };
     for (var key in tests)
     {
@@ -160,10 +160,10 @@ describe("parser", function()
             //fake replay download
             nock("http://replay1.valve.net").get('/570/' + key).replyWithFile(200, replay_dir + key);
             var match = {
-                match_id: tests[key],
-                start_time: Number(moment().format('X')),
-                slot_to_id:
-                {}
+                match_id: tests[key].match_id,
+                start_time: tests[key].start_time,
+                duration: tests[key].duration,
+                radiant_win: tests[key].radiant_win,
             };
             queue.addToQueue(pQueue, match,
             {}, function(err, job)
@@ -179,7 +179,7 @@ describe("parser", function()
                             {
                                 clearInterval(poll);
                                 //ensure parse data got inserted
-                                queries.getMatch(db, redis, tests[key],
+                                queries.getMatch(db, redis, tests[key].match_id,
                                 {}, function(err, match)
                                 {
                                     if (err)
@@ -260,11 +260,12 @@ describe("web", function()
     {
         it('/matches/:invalid', function(done)
         {
-            supertest(app).get('/matches/1').expect(500).end(function(err, res)
+            supertest(app).get('/matches/1').expect(404).end(function(err, res)
             {
                 done(err);
             });
         });
+        //TODO test against an unparsed match to catch exceptions caused by code expecting parsed data
         it('/matches/:valid', function(done)
         {
             supertest(app).get('/matches/1781962623').expect(200).end(function(err, res)

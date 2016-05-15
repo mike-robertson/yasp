@@ -59,7 +59,7 @@ function cleanRow(db, table, row, cb)
 {
     if (columnInfo[table])
     {
-        return del(null, columnInfo[table], row, cb);
+        return doCleanRow(null, columnInfo[table], row, cb);
     }
     else
     {
@@ -70,7 +70,7 @@ function cleanRow(db, table, row, cb)
                 return cb(err);
             }
             columnInfo[table] = result;
-            return del(err, columnInfo[table], row, cb);
+            return doCleanRow(err, columnInfo[table], row, cb);
         });
     }
 }
@@ -79,7 +79,7 @@ function cleanRowCassandra(cassandra, table, row, cb)
 {
     if (cassandraColumnInfo[table])
     {
-        return del(null, cassandraColumnInfo[table], row, cb);
+        return doCleanRow(null, cassandraColumnInfo[table], row, cb);
     }
     else
     {
@@ -94,30 +94,32 @@ function cleanRowCassandra(cassandra, table, row, cb)
             {
                 cassandraColumnInfo[table][r.column_name] = 1;
             });
-            return del(err, cassandraColumnInfo[table], row, cb);
+            return doCleanRow(err, cassandraColumnInfo[table], row, cb);
         });
     }
 }
 
-function del(err, schema, row, cb)
+function doCleanRow(err, schema, row, cb)
 {
     if (err)
     {
         return cb(err);
     }
-    for (var key in row)
+    var obj = Object.assign(
+    {}, row);
+    for (var key in obj)
     {
         if (!(key in schema))
         {
-            delete row[key];
+            delete obj[key];
         }
     }
-    return cb(err, row);
+    return cb(err, obj);
 }
 
 function upsert(db, table, row, conflict, cb)
 {
-    cleanRow(db, table, row, function(err)
+    cleanRow(db, table, row, function(err, row)
     {
         if (err)
         {
@@ -151,6 +153,17 @@ function insertMatch(db, redis, match, options, cb)
             delete p.account_id;
         }
     });
+    //if we have a pgroup from earlier, use it to fill out hero_ids (used after parse)
+    if (players && match.pgroup)
+    {
+        players.forEach(function(p)
+        {
+            if (match.pgroup[p.player_slot])
+            {
+                p.hero_id = match.pgroup[p.player_slot].hero_id;
+            }
+        });
+    }
     //build match.pgroup so after parse we can figure out the player ids for each slot (for caching update without db read)
     if (players && !match.pgroup)
     {
@@ -266,15 +279,7 @@ function insertMatch(db, redis, match, options, cb)
                 }
                 async.each(players || [], function(pm, cb)
                 {
-                    //denormalized columns for efficiency
                     pm.match_id = match.match_id;
-                    pm.radiant_win = match.radiant_win;
-                    pm.start_time = match.start_time;
-                    pm.duration = match.duration;
-                    pm.cluster = match.cluster;
-                    pm.lobby_type = match.lobby_type;
-                    pm.game_mode = match.game_mode;
-                    pm.parse_status = match.parse_status;
                     cleanRowCassandra(cassandra, 'player_matches', pm, function(err, pm)
                     {
                         if (err)
@@ -337,18 +342,13 @@ function insertMatch(db, redis, match, options, cb)
             {
                 match_id: match.match_id,
                 duration: match.duration,
-                start_time: match.start_time
+                start_time: match.start_time,
             }));
             redis.ltrim(types[options.type], 0, 9);
         }
         if (options.type === "parsed")
         {
             redis.zadd("parser", moment().format('X'), match.match_id);
-            if (match.start_time)
-            {
-                redis.lpush("parse_delay", new Date() - (match.start_time + match.duration) * 1000);
-                redis.ltrim("parse_delay", 0, 1000);
-            }
         }
         return cb();
     }
@@ -369,7 +369,15 @@ function insertMatch(db, redis, match, options, cb)
         else
         {
             //queue it and finish, callback with the queued parse job
-            return queue.addToQueue(pQueue, match, options, function(err, job2)
+            return queue.addToQueue(pQueue,
+            {
+                match_id: match.match_id,
+                radiant_win: match.radiant_win,
+                start_time: match.start_time,
+                duration: match.duration,
+                replay_blob_key: match.replay_blob_key,
+                pgroup: match.pgroup,
+            }, options, function(err, job2)
             {
                 cb(err, job2);
             });
@@ -409,10 +417,7 @@ function insertMatchSkill(db, row, cb)
 
 function getMatch(db, redis, match_id, options, cb)
 {
-    db.first(['matches.match_id', 'match_skill.skill', 'radiant_win', 'start_time', 'duration', 'tower_status_dire', 'tower_status_radiant', 'barracks_status_dire', 'barracks_status_radiant', 'cluster', 'lobby_type', 'leagueid', 'game_mode', 'picks_bans', 'parse_status', 'chat', 'teamfights', 'objectives', 'radiant_gold_adv', 'radiant_xp_adv', 'version']).from('matches').leftJoin('match_skill', 'matches.match_id', 'match_skill.match_id').where(
-    {
-        "matches.match_id": Number(match_id)
-    }).asCallback(function(err, match)
+    getMatchData(match_id, function(err, match)
     {
         if (err)
         {
@@ -420,7 +425,7 @@ function getMatch(db, redis, match_id, options, cb)
         }
         else if (!match)
         {
-            return cb("match not found");
+            return cb();
         }
         else
         {
@@ -428,49 +433,15 @@ function getMatch(db, redis, match_id, options, cb)
             {
                 "players": function(cb)
                 {
-                    if (options.cassandra)
-                    {
-                        options.cassandra.execute(`SELECT * FROM player_matches where match_id = ?`, [Number(match_id)],
-                        {
-                            prepare: true,
-                            fetchSize: 10,
-                            autoPage: true,
-                        }, function(err, result)
-                        {
-                            if (err)
-                            {
-                                return cb(err);
-                            }
-                            result = result.rows.map(function(m)
-                            {
-                                return deserialize(m);
-                            });
-                            //get personanames
-                            async.map(result, function(r, cb)
-                            {
-                                db.raw(`SELECT personaname FROM players WHERE account_id = ?`, [r.account_id]).asCallback(function(err, names)
-                                {
-                                    if (err)
-                                    {
-                                        return cb(err);
-                                    }
-                                    r.personaname = names.rows[0] ? names.rows[0].personaname : null;
-                                    return cb(err, r);
-                                });
-                            }, cb);
-                        });
-                    }
-                    else
-                    {
-                        db.select(['personaname', 'last_login', 'player_matches.match_id', 'player_matches.account_id', 'player_slot', 'hero_id', 'item_0', 'item_1', 'item_2', 'item_3', 'item_4', 'item_5', 'kills', 'deaths', 'assists', 'leaver_status', 'gold', 'last_hits', 'denies', 'gold_per_min', 'xp_per_min', 'gold_spent', 'hero_damage', 'tower_damage', 'hero_healing', 'level', 'additional_units', 'stuns', 'max_hero_hit', 'times', 'gold_t', 'lh_t', 'xp_t', 'obs_log', 'sen_log', 'purchase_log', 'kills_log', 'buyback_log', 'lane_pos', 'obs', 'sen', 'actions', 'pings', 'purchase', 'gold_reasons', 'xp_reasons', 'killed', 'item_uses', 'ability_uses', 'hero_hits', 'damage', 'damage_taken', 'damage_inflictor', 'runes', 'killed_by', 'kill_streaks', 'multi_kills', 'life_state']).from('player_matches').where(
-                        {
-                            "player_matches.match_id": Number(match_id)
-                        }).leftJoin('players', 'player_matches.account_id', 'players.account_id').orderBy("player_slot", "asc").asCallback(cb);
-                    }
+                    getPlayerMatchData(match_id, cb);
                 },
                 "ab_upgrades": function(cb)
                 {
                     redis.get('ability_upgrades:' + match_id, cb);
+                },
+                "replay_url": function(cb)
+                {
+                    redis.hget('replay_url', match_id, cb);
                 },
             }, function(err, result)
             {
@@ -480,9 +451,10 @@ function getMatch(db, redis, match_id, options, cb)
                 }
                 var players = result.players;
                 var ab_upgrades = JSON.parse(result.ab_upgrades);
+                match.replay_url = result.replay_url;
                 async.each(players, function(p, cb)
                 {
-                    //denormalized columns
+                    //match-level columns
                     p.radiant_win = match.radiant_win;
                     p.start_time = match.start_time;
                     p.duration = match.duration;
@@ -541,6 +513,80 @@ function getMatch(db, redis, match_id, options, cb)
             });
         }
     });
+
+    function getMatchData(match_id, cb)
+    {
+        if (options.cassandra)
+        {
+            options.cassandra.execute(`SELECT * FROM matches where match_id = ?`, [Number(match_id)],
+            {
+                prepare: true,
+                fetchSize: 10,
+                autoPage: true,
+            }, function(err, result)
+            {
+                if (err)
+                {
+                    return cb(err);
+                }
+                result = result.rows.map(function(m)
+                {
+                    return deserialize(m);
+                });
+                return cb(err, result[0]);
+            });
+        }
+        else
+        {
+            db.first(['matches.match_id', 'match_skill.skill', 'radiant_win', 'start_time', 'duration', 'tower_status_dire', 'tower_status_radiant', 'barracks_status_dire', 'barracks_status_radiant', 'cluster', 'lobby_type', 'leagueid', 'game_mode', 'picks_bans', 'parse_status', 'chat', 'teamfights', 'objectives', 'radiant_gold_adv', 'radiant_xp_adv', 'version']).from('matches').leftJoin('match_skill', 'matches.match_id', 'match_skill.match_id').where(
+            {
+                "matches.match_id": Number(match_id)
+            }).asCallback(cb);
+        }
+    }
+
+    function getPlayerMatchData(match_id, cb)
+    {
+        if (options.cassandra)
+        {
+            options.cassandra.execute(`SELECT * FROM player_matches where match_id = ?`, [Number(match_id)],
+            {
+                prepare: true,
+                fetchSize: 10,
+                autoPage: true,
+            }, function(err, result)
+            {
+                if (err)
+                {
+                    return cb(err);
+                }
+                result = result.rows.map(function(m)
+                {
+                    return deserialize(m);
+                });
+                //get personanames
+                async.map(result, function(r, cb)
+                {
+                    db.raw(`SELECT personaname FROM players WHERE account_id = ?`, [r.account_id]).asCallback(function(err, names)
+                    {
+                        if (err)
+                        {
+                            return cb(err);
+                        }
+                        r.personaname = names.rows[0] ? names.rows[0].personaname : null;
+                        return cb(err, r);
+                    });
+                }, cb);
+            });
+        }
+        else
+        {
+            db.select(['personaname', 'last_login', 'player_matches.match_id', 'player_matches.account_id', 'player_slot', 'hero_id', 'item_0', 'item_1', 'item_2', 'item_3', 'item_4', 'item_5', 'kills', 'deaths', 'assists', 'leaver_status', 'gold', 'last_hits', 'denies', 'gold_per_min', 'xp_per_min', 'gold_spent', 'hero_damage', 'tower_damage', 'hero_healing', 'level', 'additional_units', 'stuns', 'max_hero_hit', 'times', 'gold_t', 'lh_t', 'xp_t', 'obs_log', 'sen_log', 'purchase_log', 'kills_log', 'buyback_log', 'lane_pos', 'obs', 'sen', 'actions', 'pings', 'purchase', 'gold_reasons', 'xp_reasons', 'killed', 'item_uses', 'ability_uses', 'hero_hits', 'damage', 'damage_taken', 'damage_inflictor', 'runes', 'killed_by', 'kill_streaks', 'multi_kills', 'life_state']).from('player_matches').where(
+            {
+                "player_matches.match_id": Number(match_id)
+            }).leftJoin('players', 'player_matches.account_id', 'players.account_id').orderBy("player_slot", "asc").asCallback(cb);
+        }
+    }
 }
 /**
  * Benchmarks a match against stored data in Redis.
@@ -872,14 +918,6 @@ function getHeroRankings(db, redis, hero_id, options, cb)
                 {
                     redis.zscore('solo_competitive_rank', player.account_id, cb);
                 },
-                wins: function(cb)
-                {
-                    redis.hget(['wins', moment().startOf('quarter').format('X'), hero_id].join(':'), player.account_id, cb);
-                },
-                games: function(cb)
-                {
-                    redis.hget(['games', moment().startOf('quarter').format('X'), hero_id].join(':'), player.account_id, cb);
-                },
             }, function(err, result)
             {
                 if (err)
@@ -887,8 +925,6 @@ function getHeroRankings(db, redis, hero_id, options, cb)
                     return cb(err);
                 }
                 player.solo_competitive_rank = result.solo_competitive_rank;
-                player.wins = result.wins;
-                player.games = result.games;
                 cb(err);
             });
         }, function(err)
@@ -1048,9 +1084,9 @@ function searchPlayer(db, query, cb)
             db.raw(`
                     SELECT * FROM
                     (SELECT account_id, personaname, avatarfull, similarity(personaname, ?)
-                    FROM players WHERE personaname % ? LIMIT 1000) search
+                    FROM players WHERE personaname ILIKE ? LIMIT 1000) search
                     ORDER BY similarity DESC LIMIT 200
-                    `, [query, query]).asCallback(function(err, result)
+                    `, [query, '%' + query + '%']).asCallback(function(err, result)
             {
                 if (err)
                 {

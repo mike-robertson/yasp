@@ -298,6 +298,7 @@ function computeMatchData(pm)
             return !(purchase.key.indexOf("recipe_") === 0 || purchase.key === "ward_dispenser");
         });
         pm.purchase_time = {};
+        pm.first_purchase_time = {};
         pm.item_win = {};
         pm.item_usage = {};
         for (var i = 0; i < pm.purchase_log.length; i++)
@@ -307,6 +308,11 @@ function computeMatchData(pm)
             if (!pm.purchase_time[k])
             {
                 pm.purchase_time[k] = 0;
+            }
+            // Store first purchase time for every item
+            if (!pm.first_purchase_time.hasOwnProperty(k))
+            {
+                pm.first_purchase_time[k] = time;
             }
             pm.purchase_time[k] += time;
             pm.item_usage[k] = 1;
@@ -324,7 +330,7 @@ function computeMatchData(pm)
         pm.purchase_rapier = pm.purchase.rapier;
         pm.purchase_gem = pm.purchase.gem;
     }
-    if (pm.actions)
+    if (pm.actions && pm.duration)
     {
         var actions_sum = 0;
         for (var key in pm.actions)
@@ -334,7 +340,7 @@ function computeMatchData(pm)
         pm.actions_per_min = ~~(actions_sum / pm.duration * 60);
     }
     //compute throw/comeback levels
-    if (pm.radiant_gold_adv)
+    if (pm.radiant_gold_adv && pm.radiant_win !== undefined)
     {
         var radiant_gold_advantage = pm.radiant_gold_adv;
         pm.throw = pm.radiant_win !== isRadiant(pm) ? (isRadiant(pm) ? max(radiant_gold_advantage) : min(radiant_gold_advantage) * -1) : undefined;
@@ -357,8 +363,54 @@ function computeMatchData(pm)
 function renderMatch(m)
 {
     //do render-only processing (not needed for aggregation, only for match display)
+    m.hero_combat = {
+        damage:
+        {
+            radiant: 0,
+            dire: 0,
+        },
+        kills:
+        {
+            radiant: 0,
+            dire: 0,
+        },
+    };
     m.players.forEach(function(pm, i)
     {
+        //converts hashes to arrays and sorts them
+        var targets = ["ability_uses", "item_uses", "damage_inflictor", "damage_inflictor_received"];
+        targets.forEach(function(target)
+        {
+            if (pm[target])
+            {
+                var t = [];
+                for (var key in pm[target])
+                {
+                    var a = constants.abilities[key];
+                    var i = constants.items[key];
+                    var def = {
+                        img: "/public/images/default_attack.png"
+                    };
+                    def = a || i || def;
+                    var result = {
+                        img: def.img,
+                        name: key === "undefined" ? "Auto Attack/Other" : key,
+                        val: pm[target][key],
+                        className: a ? "ability" : i ? "item" : "img-sm"
+                    };
+                    if (pm.hero_hits)
+                    {
+                        result.hero_hits = pm.hero_hits[key];
+                    }
+                    t.push(result);
+                }
+                t.sort(function(a, b)
+                {
+                    return b.val - a.val;
+                });
+                pm[target + "_arr"] = t;
+            }
+        });
         //filter interval data to only be >= 0
         if (pm.times)
         {
@@ -402,40 +454,63 @@ function renderMatch(m)
                 pm.objective_damage[identifier] = pm.objective_damage[identifier] ? pm.objective_damage[identifier] + pm.damage[key] : pm.damage[key];
             }
         }
-        //converts hashes to arrays and sorts them
-        var targets = ["ability_uses", "item_uses", "damage_inflictor", "damage_inflictor_received"];
-        targets.forEach(function(target)
+        try
         {
-            if (pm[target])
+            // Compute combat k/d and damage tables
+            pm.hero_combat = {
+                damage:
+                {
+                    total: 0,
+                },
+                taken:
+                {
+                    total: 0,
+                },
+                kills:
+                {
+                    total: 0,
+                },
+                deaths:
+                {
+                    total: 0,
+                },
+            };
+            m.players.forEach(function(other_pm)
             {
-                var t = [];
-                for (var key in pm[target])
+                var team = (pm.isRadiant) ? 'radiant' : 'dire';
+                var other_hero = constants.heroes[other_pm.hero_id];
+                var damage = 0;
+                var taken = 0;
+                var kills = 0;
+                var deaths = 0;
+                // Only care about enemy hero combat
+                if (pm.isRadiant !== other_pm.isRadiant && pm.damage)
                 {
-                    var a = constants.abilities[key];
-                    var i = constants.items[key];
-                    var def = {
-                        img: "/public/images/default_attack.png"
-                    };
-                    def = a || i || def;
-                    var result = {
-                        img: def.img,
-                        name: key === "undefined" ? "Auto Attack/Other" : key,
-                        val: pm[target][key],
-                        className: a ? "ability" : i ? "item" : "img-sm"
-                    };
-                    if (pm.hero_hits)
-                    {
-                        result.hero_hits = pm.hero_hits[key];
-                    }
-                    t.push(result);
+                    damage = (pm.damage[other_hero.name]) ? pm.damage[other_hero.name] : 0;
+                    taken = (pm.damage_taken[other_hero.name]) ? pm.damage_taken[other_hero.name] : 0;
                 }
-                t.sort(function(a, b)
+                if (pm.isRadiant !== other_pm.isRadiant && pm.killed)
                 {
-                    return b.val - a.val;
-                });
-                pm[target + "_arr"] = t;
-            }
-        });
+                    kills = (pm.killed[other_hero.name]) ? pm.killed[other_hero.name] : 0;
+                    deaths = (pm.killed_by[other_hero.name]) ? pm.killed_by[other_hero.name] : 0;
+                }
+                pm.hero_combat.damage[other_hero.name] = damage;
+                pm.hero_combat.taken[other_hero.name] = taken;
+                pm.hero_combat.damage.total += damage;
+                pm.hero_combat.taken.total += taken;
+                pm.hero_combat.kills[other_hero.name] = kills;
+                pm.hero_combat.deaths[other_hero.name] = deaths;
+                pm.hero_combat.kills.total += kills;
+                pm.hero_combat.deaths.total += deaths;
+                m.hero_combat.damage[team] += damage;
+                m.hero_combat.kills[team] += kills;
+            });
+        }
+        catch (e)
+        {
+            console.error("error occurred while summing crosstables");
+            console.error(e);
+        }
     });
     console.time("generating player analysis");
     m.players.forEach(function(player_match, i)
@@ -543,7 +618,7 @@ function renderMatch(m)
                 tfplayer.isRadiant = isRadiant(p);
                 tfplayer.personaname = p.personaname;
                 tfplayer.account_id = p.account_id;
-                tfplayer.participate = tfplayer.deaths > 0 || tfplayer.damage > 0;
+                tfplayer.participate = tfplayer.deaths > 0 || tfplayer.damage > 0 || tfplayer.healing > 0;
                 if (!p.teamfights_participated)
                 {
                     p.teamfights_participated = 0;

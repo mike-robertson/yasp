@@ -45,6 +45,14 @@ function processExpand(entries, meta)
                         value: e.value
                     };
                     expand(inf);
+                    var inf_rec = {
+                        type: "damage_inflictor_received",
+                        time: e.time,
+                        unit: e.key,
+                        key: translate(e.inflictor),
+                        value: e.value
+                    };
+                    expand(inf_rec);
                     //biggest hit on a hero
                     var m = {
                         type: "max_hero_hit",
@@ -59,6 +67,7 @@ function processExpand(entries, meta)
                 }
             }
         },
+        /*
         "DOTA_COMBATLOG_HEAL": function(e)
         {
             //healing
@@ -85,6 +94,7 @@ function processExpand(entries, meta)
                 }
             }
         },
+        */
         "DOTA_COMBATLOG_MODIFIER_REMOVE": function(e)
         {
             //lose buff/debuff
@@ -445,6 +455,7 @@ function processExpand(entries, meta)
             interval: 1,
             buyback_log: 1,
             damage: 1,
+            healing: 1,
             gold_reasons: 1,
             xp_reasons: 1,
             ability_uses: 1,

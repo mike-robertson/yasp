@@ -85,26 +85,22 @@ pQueue.process(1, function(job, cb)
                 {
                     return cb(err);
                 }
-                //extend match object with parsed data, keep existing data if key conflict
-                //match.players was deleted earlier during insertion of api data
-                for (var key in parsed_data)
+                parsed_data.match_id = match.match_id;
+                parsed_data.pgroup = match.pgroup;
+                parsed_data.radiant_win = match.radiant_win;
+                parsed_data.start_time = match.start_time;
+                parsed_data.duration = match.duration;
+                parsed_data.replay_blob_key = match.replay_blob_key;
+                parsed_data.parse_status = 2;
+                if (match.replay_blob_key)
                 {
-                    match[key] = match[key] || parsed_data[key];
+                    insertUploadedParse(parsed_data, cb);
                 }
-                match.parse_status = 2;
-                cb(err);
+                else
+                {
+                    insertStandardParse(parsed_data, cb);
+                }
             });
-        },
-        "insertMatch": function(cb)
-        {
-            if (match.replay_blob_key)
-            {
-                insertUploadedParse(match, cb);
-            }
-            else
-            {
-                insertStandardParse(match, cb);
-            }
         },
     }, function(err)
     {
@@ -226,6 +222,10 @@ function runParse(match, job, cb)
     });
     parser.stdin.on('error', exit);
     parser.stdout.on('error', exit);
+    parser.stderr.on('data', function printStdErr(data)
+    {
+        console.log(data.toString());
+    });
     var parseStream = ndjson.parse();
     parseStream.on('data', function handleStream(e)
     {
@@ -242,10 +242,6 @@ function runParse(match, job, cb)
     inStream.pipe(bz.stdin);
     bz.stdout.pipe(parser.stdin);
     parser.stdout.pipe(parseStream);
-    parser.stderr.on('data', function printStdErr(data)
-    {
-        console.log(data.toString());
-    });
 
     function exit(err)
     {
@@ -268,7 +264,7 @@ function runParse(match, job, cb)
                 console.time(message);
                 var meta = processMetadata(entries);
                 var res = processExpand(entries, meta);
-                var parsed_data = processParsedData(res.parsed_data, meta);
+                var parsed_data = processParsedData(res.parsed_data);
                 var teamfights = processTeamfights(res.tf_data, meta);
                 var upload = processUploadProps(res.uploadProps, meta);
                 var ap = processAllPlayers(res.int_data);

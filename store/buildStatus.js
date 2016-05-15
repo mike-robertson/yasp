@@ -8,12 +8,23 @@ var moment = require('moment');
 module.exports = function buildStatus(db, redis, cb)
 {
     console.time('status');
+    redis.zremrangebyscore("added_match", 0, moment().subtract(1, 'day').format('X'));
+    redis.zremrangebyscore("error_500", 0, moment().subtract(1, 'day').format('X'));
+    redis.zremrangebyscore("api_hits", 0, moment().subtract(1, 'day').format('X'));
+    redis.zremrangebyscore("alias_hits", 0, moment().subtract(1, 'day').format('X'));
+    redis.zremrangebyscore("parser", 0, moment().subtract(1, 'day').format('X'));
+    config.RETRIEVER_HOST.split(',').map(function(r)
+    {
+        return "retriever:" + r.split('.')[0];
+    }).forEach(function(retkey)
+    {
+        redis.zremrangebyscore(retkey, 0, moment().subtract(1, 'day').format('X'));
+    });
     async.series(
     {
         user_players: function(cb)
         {
             /*
-            //TODO bootstrap redis zset
             db.from('players').count().whereNotNull('last_login').asCallback(function(err, count)
             {
                 extractCount(err, count, cb);
@@ -127,13 +138,6 @@ module.exports = function buildStatus(db, redis, cb)
             redis.lrange("load_times", 0, -1, function(err, arr)
             {
                 cb(err, generateCounts(arr, 1000));
-            });
-        },
-        parse_delay: function(cb)
-        {
-            redis.lrange("parse_delay", 0, -1, function(err, arr)
-            {
-                cb(err, generateCounts(arr, 60 * 60 * 1000));
             });
         },
         health: function(cb)
